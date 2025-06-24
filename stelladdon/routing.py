@@ -247,9 +247,7 @@ class Route:
 
 
     def get_services(self) -> List[Service]:
-        if self.master:
-            return self.services + self.master.get_services()
-        return self.services
+        return self.services + self.upper.get_services()
 
 
     async def __call__(self, req: Request):
@@ -261,6 +259,7 @@ class Route:
             print(arguments)
 
             for service in self.get_services():
+                print("Running before service:", service.name)
                 if service.before_fn:
                     service_result = await run_with_context(service.before_fn, arguments, context)
 

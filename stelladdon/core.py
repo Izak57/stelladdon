@@ -83,9 +83,20 @@ async def _run_func(func: Callable,
 
         func.__code__ = func_code
 
-        if solved.errors:
+        errors = solved.errors.copy()
+        print("ARGUMENTS:", arguments)
+        if errors:
+            for error in errors.copy():
+                print("AN ERROR:", error["loc"][-1], error["loc"][-1] in arguments)
+                if error["type"] == "missing" and error["loc"][-1] in arguments:
+                    errors.remove(error)
+
+                if error["type"] == "missing" and error["loc"][0] == "body" and body:
+                    solved.values["body"] = body
+
+        if errors:
             validation_error = RequestValidationError(
-                _normalize_errors(solved.errors), body=body
+                _normalize_errors(errors), body=body
             )
             raise validation_error
 
