@@ -10,6 +10,8 @@ from fastapi.utils import get_path_param_names
 from fastapi.dependencies.utils import get_dependant, solve_dependencies
 from fastapi.responses import JSONResponse, Response
 from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi._compat import _normalize_errors
 from .errors import StellaAPIError, NoWaitResponse
 from pydantic import BaseModel
 
@@ -80,6 +82,15 @@ async def _run_func(func: Callable,
         )
 
         func.__code__ = func_code
+
+        if solved.errors:
+            validation_error = RequestValidationError(
+                _normalize_errors(solved.errors), body=body
+            )
+            raise validation_error
+
+        """if solved.values.get("body", "abc") == None and body:
+            solved.values["body"] = body"""
 
         resp = await run_endpoint_function(
             dependant=dependant,
