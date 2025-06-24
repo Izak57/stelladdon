@@ -20,6 +20,12 @@ from .errors import StellaAPIError, NoWaitResponse
 from .pagination import PaginationInfo, PaginableListInfo
 
 
+__all__ = [
+    "Context", "Route", "StellAppMaster",
+    "StellaRouter"
+]
+
+
 
 class Context:
 
@@ -37,6 +43,73 @@ class Context:
         self.arguments[name] = value
 
 
+    def raise_api_error(self,
+                        code: str,
+                        status_code: int,
+                        message: str | None = None) -> None:
+        raise StellaAPIError(
+            self,
+            code=code,
+            status_code=status_code,
+            message=message
+        )
+
+
+    async def call_before_service(self, service: Service):
+        resp = await run_with_context(service.before_fn, self.arguments, self)
+        return resp
+
+
+    def paginate(self,
+                 items: list[Any],
+                 listname: str | None = None,
+                 has_next_page: bool | None = None) -> dict[str, Any]:
+        listinfo = self.pagination[listname]
+        start = (listinfo.page - 1) * listinfo.per_page
+        end = start + listinfo.per_page
+        data = items[start:end]
+
+        if has_next_page is None:
+            has_next_page = len(items[end:]) > 0
+
+        return self.as_paginable(
+            data,
+            listname=listinfo.name,
+            has_next_page=has_next_page
+        )
+
+
+    def as_paginable(self,
+                     items: list,
+                     listname: str | None = None,
+                     has_next_page: bool = True) -> dict[str, Any]:
+        listinfo = self.pagination[listname]
+
+        return {
+            "@stellaType": "paginable",
+            "listname": listinfo.name,
+            "page": listinfo.page,
+            "perPage": listinfo.per_page,
+            "nextPage": listinfo.page + 1 if has_next_page else None,
+            "items": items,
+        }
+
+
+    def serialize(self, data: Any) -> dict[str, Any]:
+        """
+        Serialize the data using the route serialization method.
+        """
+        return self.route.encode_response(data)
+
+
+    def jsonstrify(self, data: Any) -> str:
+        """
+        Serialize the data using the route serialization method.
+        And return a JSON string.
+        """
+        return jsonable_encoder(self.serialize(data))
+
+
     @property
     def master(self) -> "StellAppMaster":
         return self.route.master
@@ -44,11 +117,11 @@ class Context:
 
     @property
     def pagination(self) -> PaginationInfo:
-        if self._pagination_info is not None:
-            return self._pagination_info
+        if self._paginfo is not None:
+            return self._paginfo
 
         pagination_info = PaginationInfo(self)
-        for key, value in self.request.query_params.items():
+        for key, value in self.req.query_params.items():
             if key.startswith("page@"):
                 name = key.split("@")[1] or None
                 page = int(value)
@@ -71,7 +144,7 @@ class Context:
                     listinfo = PaginableListInfo(name=name, per_page=per_page)
                     pagination_info.list_infos.append(listinfo)
 
-        self._pagination_info = pagination_info
+        self._paginfo = pagination_info
         return pagination_info
 
 
@@ -79,13 +152,18 @@ class Context:
 class Route:
 
     def __init__(self,
-                 master: "StellAppMaster",
+                 upper: "StellAppMaster | StellaRouter | None",
                  fn: Callable,
                  services: list[Service]) -> None:
-        self.master = master
+        self.upper = upper
         self.fn = fn
         self.services = services
         self.faroute: APIRoute | None = None
+
+
+    @property
+    def master(self) -> "StellAppMaster":
+        return self.upper.master
 
 
     def get_arguments(self) -> dict[str, Any]:
@@ -116,7 +194,7 @@ class Route:
                     arguments[pathparam] = DatabaseGetterArg(
                         table=generic_type,
                         pyname=pathparam,
-                        key=pathparam,
+                        key=annot_val.key or pathparam,
                         none_allowed=none_allowed,
                         only_one=not annot_val.multiple
                     )
@@ -168,6 +246,12 @@ class Route:
         return response
 
 
+    def get_services(self) -> List[Service]:
+        if self.master:
+            return self.services + self.master.get_services()
+        return self.services
+
+
     async def __call__(self, req: Request):
         context = Context(req, self)
         arguments: dict[str, Any] = {}
@@ -176,13 +260,13 @@ class Route:
             arguments = self.process_arguments(context)
             print(arguments)
 
-            for service in self.services:
+            for service in self.get_services():
                 if service.before_fn:
                     service_result = await run_with_context(service.before_fn, arguments, context)
 
             response = await run_with_context(self.fn, arguments, context)
             
-            for service in self.services:
+            for service in self.get_services():
                 if service.after_fn:
                     afterservice_result = service.after_fn(context, response)
                     if iscoroutinefunction(service.after_fn):
@@ -195,7 +279,7 @@ class Route:
             errortype = type(e)
 
             best_handler = next((
-                handler for handler in self.master.error_handlers
+                handler for handler in self.master.get_error_handlers()
                 if issubclass(errortype, handler.errortype)), None)
             
             if best_handler:
@@ -209,12 +293,71 @@ class Route:
 
 
 
-class StellAppMaster:
+class StellaRouter:
+
+    def __init__(self,
+                 router: APIRouter,
+                 services: list[Service] | None = None) -> None:
+        self.routers: list["StellaRouter"] = []
+        self.routes: List[Route] = []
+        self.farouter = router
+        self.upper: StellAppMaster | StellaRouter | None = None
+        self.error_handlers: List[ErrorHandler] = []
+        self.services = services or []
+
+
+    @property
+    def master(self) -> "StellAppMaster":
+        return self.upper.master
+
+
+    def errorhandler(self, errortype: type[Exception]) -> Callable:
+        def decorator(func: Callable) -> Callable:
+            handler = ErrorHandler(errortype, func)
+            self.error_handlers.append(handler)
+            return func
+        return decorator
+
+
+    def get_services(self) -> List[Service]:
+        if self.upper:
+            return self.services + self.upper.get_services()
+        return self.services
+
+
+    def route(self,
+              method: str,
+              path: str,
+              services: list[Service] | None = None) -> Callable:
+        def decorator(func: Callable) -> Callable:
+            route = Route(self, func, services or [])
+            self.routes.append(route)
+            func.__route__ = route
+
+            self.farouter.add_api_route(path, route.__call__, methods=[method])
+            faroute = self.farouter.routes[-1] # TODO: inject metadata then find
+            route.faroute = faroute
+
+        return decorator
+
+
+    def include_router(self, router: "StellaRouter") -> None:
+        router.upper = self
+        self.routers.append(router)
+        self.farouter.include_router(router.farouter)
+
+
+    def get_error_handlers(self) -> List[ErrorHandler]:
+        return self.error_handlers + self.upper.get_error_handlers() if self.upper else []
+
+
+
+class StellAppMaster(StellaRouter):
 
     def __init__(self, app: FastAPI) -> None:
         self.app = app
-        self.routes: List[Route] = []
         self.error_handlers: List[ErrorHandler] = []
+        super().__init__(self.app.router, services=[])
 
         @self.app.exception_handler(StellaAPIError)
         async def stella_error_handler(request: Request, exc: StellaAPIError):
@@ -227,34 +370,15 @@ class StellAppMaster:
         async def nowait_response_handler(request: Request, exc: NoWaitResponse):
             resp = exc.ctx.route.encode_response(exc.response)
             if not isinstance(resp, Response):
-                resp = exc.ctx.controller.router.default_response_class(resp)
+                resp = exc.ctx.master.app.default_response_class(resp)
 
             return resp
 
 
-    def errorhandler(self, errortype: type[Exception]) -> Callable:
-        """
-        A decorator to register an error handler for a specific exception type.
-        """
-        def decorator(func: Callable) -> Callable:
-            handler = ErrorHandler(errortype, func)
-            self.error_handlers.append(handler)
-            return func
-        return decorator
+    @property
+    def master(self) -> "StellAppMaster":
+        return self
 
 
-    def route(self,
-              method: str,
-              path: str,
-              services: list[Service] | None = None) -> None:
-        def decorator(func: Callable) -> Callable:
-            route = Route(self, func, services or [])
-            self.routes.append(route)
-            func.__route__ = route
-
-            # TODO: check and change path to create customizable path serialization
-            self.app.add_api_route(path, route.__call__, methods=[method])
-            faroute = self.app.routes[-1] # TODO: inject metadata then find
-            route.faroute = faroute
-
-        return decorator
+    def get_error_handlers(self) -> List[ErrorHandler]:
+        return self.error_handlers

@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from .routing import Context
 
 
+__all__ = [
+    "APIObject", "FromDB"
+]
+
+
 
 async def run_with_context(func: Callable,
                            arguments: dict[str, Any],
@@ -108,9 +113,12 @@ class ErrorHandler:
 
 class FromDatabaseArg:
 
-    def __init__(self, table: Table, multiple: bool):
+    def __init__(self, table: Table,
+                 multiple: bool,
+                 key: str | None) -> None:
         self.table = table
         self.multiple = multiple
+        self.key = key
 
 
 
@@ -122,9 +130,11 @@ class APIObject(BaseModel, ABC):
 
 
 
-def FromDB(table: Table, multiple: bool = False) -> FromDatabaseArg:
+def FromDB(table: Table,
+           multiple: bool = False,
+           key: str | None = None) -> FromDatabaseArg:
     """
     A special type hint to indicate that the argument should be fetched from the database.
     TODO: doc
     """
-    return FromDatabaseArg(table, multiple)
+    return FromDatabaseArg(table, multiple, key)
