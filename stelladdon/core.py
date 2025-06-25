@@ -31,6 +31,7 @@ __all__ = [
 async def run_with_context(func: Callable,
                            arguments: dict[str, Any],
                            ctx: "Context") -> Any:
+    arguments = arguments.copy()
     arguments["stella"] = ctx
     for arg, argval in ctx.arguments.items():
         arguments[arg] = argval
@@ -84,15 +85,16 @@ async def _run_func(func: Callable,
         func.__code__ = func_code
 
         errors = solved.errors.copy()
-        print("ARGUMENTS:", arguments)
         if errors:
             for error in errors.copy():
-                print("AN ERROR:", error["loc"][-1], error["loc"][-1] in arguments)
                 if error["type"] == "missing" and error["loc"][-1] in arguments:
                     errors.remove(error)
 
                 if error["type"] == "missing" and error["loc"][0] == "body" and body:
-                    solved.values["body"] = body
+                    errors.remove(error)
+
+                if error["type"] == "model_attributes_type":
+                    errors.remove(error)
 
         if errors:
             validation_error = RequestValidationError(

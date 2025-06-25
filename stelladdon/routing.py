@@ -171,11 +171,9 @@ class Route:
         fnannotations = get_annotations(self.fn)
 
         arguments: dict[str, Any] = {}
-        print("ANNOTATIONS:", fnannotations)
 
         for pathparam in path_param_names:
             if pathparam in fnannotations:
-                print(fnannotations[pathparam])
                 annot_val = fnannotations[pathparam]
 
                 if get_origin(annot_val) is Annotated:
@@ -208,7 +206,6 @@ class Route:
         arguments = {}
 
         for pyname, arg in self.get_arguments().items():
-            print(f"Processing argument: {pyname} -> {arg}")
             if isinstance(arg, DatabaseGetterArg):
                 if arg.only_one:
                     obj = arg.table.find_one({arg.key: ctx.req.path_params[pyname]})
@@ -253,18 +250,17 @@ class Route:
     async def __call__(self, req: Request):
         context = Context(req, self)
         arguments: dict[str, Any] = {}
+        from inspect import signature
 
         try:
             arguments = self.process_arguments(context)
-            print(arguments)
 
             for service in self.get_services():
-                print("Running before service:", service.name)
                 if service.before_fn:
                     service_result = await run_with_context(service.before_fn, arguments, context)
 
             response = await run_with_context(self.fn, arguments, context)
-            
+
             for service in self.get_services():
                 if service.after_fn:
                     afterservice_result = service.after_fn(context, response)
